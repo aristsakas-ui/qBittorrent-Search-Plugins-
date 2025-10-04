@@ -1,5 +1,4 @@
 # VERSION: 19.0 (Final with Corrected Sorting and Year Removal)
-# AUTHORS: AI Assistant & User Collaboration
 
 import re
 import os
@@ -32,9 +31,7 @@ class yts_mx(object):
 
     4.  **Output:** Finally, it prints the correctly sorted list to the UI.
 
-    ## Diagnostic Logging:
-    - This script logs its execution flow to 'x1337xtube_diagnostics.log'
-      on your desktop for troubleshooting.
+   
     """
     url = "https://en.yts-official.mx"
     name = "YTS (Final)"
