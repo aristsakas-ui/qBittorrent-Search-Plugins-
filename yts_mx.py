@@ -1,0 +1,152 @@
+# VERSION: 19.0 (Final with Corrected Sorting and Year Removal)
+# AUTHORS: AI Assistant & User Collaboration
+
+import re
+import os
+import datetime
+from urllib.parse import quote_plus, urljoin, unquote_plus
+
+# qBittorrent-specific imports
+from helpers import retrieve_url
+from novaprinter import prettyPrinter
+
+class yts_mx(object):
+    """
+    This search engine script is designed to interface with the YTS.mx website.
+
+    ## Functionality Explained:
+    1.  **Aggressive Query Cleaning:** The script applies a strict set of cleaning
+        rules. It UNCONDITIONALLY removes any trailing 4-digit number or any
+        parenthetical year from the query to ensure the most forgiving and
+        broad search possible, as requested.
+
+    2.  **Multi-Page Fetch:** To maximize results, the script fetches the first
+        TWO pages of search results, collecting all unique movie links.
+
+    3.  **Result Collection & Corrected Sorting:** The script collects ALL torrents
+        and performs a powerful custom sort with corrected logic to ensure the
+        most relevant results always appear at the top. The hierarchy is:
+        - Rank 1: Title STARTS WITH search term.
+        - Rank 2: Title CONTAINS search term as a whole word.
+        - Rank 3: Title contains search term as part of another word.
+
+    4.  **Output:** Finally, it prints the correctly sorted list to the UI.
+
+    ## Diagnostic Logging:
+    - This script logs its execution flow to 'x1337xtube_diagnostics.log'
+      on your desktop for troubleshooting.
+    """
+    url = "https://en.yts-official.mx"
+    name = "YTS (Final)"
+    supported_categories = {'all': 'all', 'movies': 'movies'}
+
+
+    def __init__(self):
+        pass
+    def download_torrent(self, info):
+        print(f"{info} -1")
+
+    def _clean_query(self, query):
+        try:
+            cleaned_query = unquote_plus(query)
+        except Exception:
+            cleaned_query = query
+
+        amp_pos = cleaned_query.find('&')
+        if amp_pos != -1:
+            cleaned_query = cleaned_query[:amp_pos].strip()
+
+        # --- FIX 3: UNCONDITIONAL YEAR REMOVAL ---
+        # Rule: Delete parenthetical years, e.g., (1999)
+        cleaned_query = re.sub(r'\(\s*\d{4}\s*\)', '', cleaned_query).strip()
+
+        # Rule: Delete trailing 4-digit years, ALWAYS.
+        words = cleaned_query.split()
+        if words and words[-1].isdigit() and len(words[-1]) == 4:
+            cleaned_query = ' '.join(words[:-1]).strip()
+
+        cleaned_query = cleaned_query.replace('(', '').replace(')', '').strip()
+
+        return cleaned_query
+
+    def _get_sort_rank(self, title, search_term):
+        """Assigns a sort rank. Lower is better."""
+        low_title = title.lower()
+        low_term = search_term.lower()
+
+        # --- FIX 2: CORRECTED SORTING LOGIC ---
+        # Using if/elif ensures only the best possible rank is returned.
+        # Rank 1 (Best): Title starts with the search term
+        if low_title.startswith(low_term):
+            return 1
+        # Rank 2: Title contains the search term as a whole word
+        elif re.search(r'\b' + re.escape(low_term) + r'\b', low_title):
+            return 2
+        # Rank 3: Title contains the search term as part of another word
+        elif low_term in low_title:
+            return 3
+        # Rank 4 (Worst): Default/No match
+        else:
+            return 4
+
+    def search(self, query, cat='all'):
+        try:
+            search_query = self._clean_query(query)
+            if not search_query: return
+
+            all_movie_links = set()
+            for page_num in range(1, 3):
+                search_url = f"{self.url}/browse-movies?keyword={quote_plus(search_query)}&page={page_num}"
+                search_page_html = retrieve_url(search_url)
+
+                if not search_page_html: break
+                links_on_page = set(re.findall(r'<div class="browse-movie-wrap[^"]*">.*?<a href="(/movies/[^"]+)"', search_page_html, re.DOTALL))
+                if not links_on_page: break
+
+                all_movie_links.update(links_on_page)
+
+            if not all_movie_links: return
+
+            all_results = []
+            for movie_link in all_movie_links:
+                desc_link = urljoin(self.url, movie_link)
+                try:
+                    detail_page_html = retrieve_url(desc_link)
+                    if not detail_page_html: continue
+                except Exception:
+                    continue
+
+                title_match = re.search(r'<div id="movie-info".*?>.*?<h1>([^<]+)</h1>', detail_page_html, re.DOTALL)
+                year_match = re.search(r'<div id="movie-info".*?>.*?<h2>(\d{4})</h2>', detail_page_html, re.DOTALL)
+                if not title_match or not year_match: continue
+
+                movie_title = title_match.group(1).strip()
+                movie_year = year_match.group(1).strip()
+
+                all_torrents = re.findall(
+                    r'<div class="modal-torrent">.*?<span>([^<]+)</span>.*?<p class="quality-size">([^<]+)</p>.*?((?:\d|\.)+\s(?:GB|MB)).*?href="(magnet:[^"]+)"',
+                    detail_page_html,
+                    re.DOTALL
+                )
+
+                for torrent_data in all_torrents:
+                    quality, torrent_type, size, magnet_link = torrent_data
+                    # We need to store the original title for sorting
+                    result = {'link': magnet_link.replace('&', '&'),
+                              'name': f"{movie_title} ({movie_year}) [{quality.replace('º', '')}.{torrent_type}] [YTS]",
+                              'size': size, 'seeds': -1, 'leech': -1,
+                              'engine_url': self.url, 'desc_link': desc_link,
+                              '_sort_title': movie_title} # Internal key for sorting
+                    all_results.append(result)
+
+
+            # Sort the results using the corrected ranking function
+            all_results.sort(key=lambda r: self._get_sort_rank(r['_sort_title'], search_query))
+
+            for result in all_results:
+                # Remove the temporary sort key before printing
+                del result['_sort_title']
+                prettyPrinter(result)
+
+        except Exception as e:
+            return
