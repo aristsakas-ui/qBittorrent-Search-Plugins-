@@ -1,10 +1,8 @@
-Python "intelligent" scripts fully working IMPORTANT both require the installation of a library
+Python "intelligent" scripts fully working IMPORTANT all require the installation of a library
 
 Tested on qBittorrent v5.1.0 Python 3.9.13
 
-Tested and working for over two months now but uloaded here and working since 4/10/25
-
-both scrape the torrent sites and try to sort the most relevant results 
+all scrape the torrent sites and try to sort the most relevant results 
 
 IMPORTANT: x1337xtube.py is NOT an official mirror of x1337x but contains all of it's torrents. __Use at your own risk__
 
@@ -12,7 +10,7 @@ IMPORTANT: x1337xtube.py is NOT an official mirror of x1337x but contains all of
 
 ## What You Need to Install
 
-Both search plugins require one main Python library to work properly.
+All search plugins require one main Python library to work properly.
 
 ### For Both Windows and Linux:
 
