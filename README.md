@@ -2,7 +2,7 @@ Python "intelligent" scripts fully working IMPORTANT all require the installatio
 
 Tested on qBittorrent v5.1.0 Python 3.9.13
 
-3 scrape the torrent sites and 2 use the apis and try to sort the most relevant results 
+2 scrape the torrent sites and 2 use the apis and try to sort the most relevant results 
 
 IMPORTANT: x1337xtube.py is NOT an official mirror of x1337x but contains all of it's torrents. __Use at your own risk__
 
