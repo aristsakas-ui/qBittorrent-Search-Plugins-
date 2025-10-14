@@ -1,5 +1,6 @@
-# VERSION: 1.8
-# AUTHORS: mauricci (with intelligent search features, minimal readability improvements)
+# VERSION: 2.2
+# AUTHORS: mauricci (with intelligent search features)
+# Me
 
 import re
 import sys
@@ -21,12 +22,12 @@ class torrentproject:
     supported_categories = {'all': '0'}
 
     # Search settings
-    MAX_PAGES_TO_FETCH = 3           # Search 3 pages per pass
-    MAX_MAGNET_WORKERS = 10          # Parallel magnet fetching
-    SAFETY_NET_RESULTS_COUNT = 5     # Show lower-scoring results as backup
+    MAX_PAGES_TO_FETCH = 3
+    MAX_MAGNET_WORKERS = 10
+    SAFETY_NET_RESULTS_COUNT = 5
 
     def _clean_conservative_query(self, query):
-        """Remove unambiguous metadata (e.g., year) from query."""
+        """Remove unambiguous metadata from query."""
         query = re.sub(r'[\(\[]\d{4}[\)\]]', '', query)
         query = re.sub(r'\s+', ' ', query)
         return query.strip()
@@ -60,16 +61,13 @@ class torrentproject:
         """Fetch magnet link for a torrent."""
         try:
             html = retrieve_url(torrent['desc_link'])
-            match = re.search(r'href=["\'](.*?(magnet.+?))["\']', html)
-            if match:
-                magnet = unquote(match.group(1))
+            magnet_match = re.search(r'href=["\'](magnet:\?[^"\']+)["\']', html, re.IGNORECASE)
+            if magnet_match:
+                magnet = unquote(magnet_match.group(1))
                 torrent['link'] = magnet
-                print(f"DEBUG: Fetched magnet for {torrent['name']}: {magnet}", file=sys.stderr)
                 return torrent
-            else:
-                print(f"DEBUG: No magnet link found for {torrent['desc_link']}", file=sys.stderr)
         except Exception as e:
-            print(f"DEBUG: Error fetching magnet for {torrent['desc_link']}: {e}", file=sys.stderr)
+            print(f"DEBUG: Error fetching magnet: {e}", file=sys.stderr)
         return None
 
     class MyHTMLParser(HTMLParser):
@@ -81,20 +79,20 @@ class torrentproject:
             self.insideDataDiv = False
             self.pageComplete = False
             self.spanCount = -1
+            # Field positions
             self.infoMap = {
                 "name": 0,
                 "torrLink": 0,
-                "seeds": 2,
-                "leech": 3,
-                "pub_date": 4,
-                "size": 5,
+                "seeds": 2,      # ORIGINAL: seeds at position 2
+                "leech": 3,      # ORIGINAL: leech at position 3
+                "pub_date": 4,   # ORIGINAL: date at position 4
+                "size": 5,       # ORIGINAL: size at position 5
             }
             self.fullResData = []
             self.pageRes = []
             self.singleResData = self.get_single_data()
 
         def get_single_data(self):
-            """Return default torrent data dictionary."""
             return {
                 'name': '-1',
                 'seeds': '-1',
@@ -108,19 +106,32 @@ class torrentproject:
 
         def handle_starttag(self, tag, attrs):
             attributes = dict(attrs)
+
+            # Handle navigation detection
             if tag == 'div' and 'nav' in attributes.get('id', ''):
                 self.pageComplete = True
+
+            # Start of results section
             if tag == 'div' and attributes.get('id', '') == 'similarfiles':
                 self.insideResults = True
+
+            # Individual torrent divs
             if tag == 'div' and self.insideResults and 'gac_bb' not in attributes.get('class', ''):
                 self.insideDataDiv = True
+
+            # Count spans within torrent divs
             elif tag == 'span' and self.insideDataDiv and 'verified' != attributes.get('title', ''):
                 self.spanCount += 1
+
+            # Handle links - capture ALL catalog types (t0, t1, t2, t3, t4)
             if self.insideDataDiv and tag == 'a' and len(attrs) > 0:
-                if self.infoMap['torrLink'] == self.spanCount and 'href' in attributes:
-                    self.singleResData['link'] = self.url + attributes['href']
-                if self.infoMap['name'] == self.spanCount and 'href' in attributes:
-                    self.singleResData['desc_link'] = self.url + attributes['href']
+                href = attributes.get('href', '')
+                # Match ALL catalog types using regex
+                if re.match(r'^/t[0-4]-', href):
+                    if self.infoMap['torrLink'] == self.spanCount and href:
+                        self.singleResData['link'] = self.url + href
+                    if self.infoMap['name'] == self.spanCount and href:
+                        self.singleResData['desc_link'] = self.url + href
 
         def handle_endtag(self, tag):
             if not self.pageComplete:
@@ -128,23 +139,22 @@ class torrentproject:
                     self.insideDataDiv = False
                     self.spanCount = -1
                     if len(self.singleResData) > 0:
+                        # Only process valid torrents
                         if (self.singleResData['name'] != '-1' and
                                 self.singleResData['size'] != '-1' and
                                 self.singleResData['name'].lower() != 'nome'):
                             if self.singleResData['desc_link'] != '-1' or self.singleResData['link'] != '-1':
+                                # Convert date to timestamp
                                 try:
                                     date_string = self.singleResData['pub_date']
-                                    date = datetime.strptime(date_string, '%Y-%m-%d %H:%M:%S')
-                                    self.singleResData['pub_date'] = int(date.timestamp())
+                                    if 'ago' not in date_string:  # Only convert absolute dates
+                                        date = datetime.strptime(date_string, '%Y-%m-%d %H:%M:%S')
+                                        self.singleResData['pub_date'] = int(date.timestamp())
                                 except Exception:
                                     pass
-                                try:
-                                    prettyPrinter(self.singleResData)
-                                    print(f"DEBUG: Parsed torrent: {self.singleResData['name']}", file=sys.stderr)
-                                except Exception:
-                                    print(self.singleResData)
-                                self.pageRes.append(self.singleResData)
-                                self.fullResData.append(self.singleResData)
+
+                                self.pageRes.append(self.singleResData.copy())
+                                self.fullResData.append(self.singleResData.copy())
                         self.singleResData = self.get_single_data()
 
         def handle_data(self, data):
@@ -167,20 +177,20 @@ class torrentproject:
         pass_torrents = []
 
         for currPage in range(0, self.MAX_PAGES_TO_FETCH):
-            url = f"{self.url}/browse?t={what}&p={currPage}"
+            url = f"{self.url}/?t={what}&p={currPage}"
             try:
                 html = retrieve_url(url)
-                print(f"DEBUG: Fetched page {currPage} for query {what}", file=sys.stderr)
                 parser = self.MyHTMLParser(self.url)
                 parser.feed(html)
                 parser.close()
                 pass_torrents.extend(parser.pageRes)
-                print(f"DEBUG: Found {len(parser.pageRes)} torrents on page {currPage}", file=sys.stderr)
+
+                # Stop if last page
                 if len(parser.pageRes) < 20:
                     break
+
             except Exception as e:
-                if __name__ == '__main__':
-                    print(f"Error retrieving page {currPage}: {e}", file=sys.stderr)
+                print(f"DEBUG: Error retrieving page {currPage}: {e}", file=sys.stderr)
                 continue
 
         return pass_torrents
@@ -190,71 +200,91 @@ class torrentproject:
         decoded_what = unquote(what)
         search_keywords = self._get_scoring_keywords(decoded_what)
 
-        # First pass: conservative cleaning
-        pass1_query = self._clean_conservative_query(decoded_what)
-        pass1_results = self._execute_search_pass(pass1_query, cat)
-        print(f"DEBUG: Pass 1 found {len(pass1_results)} results", file=sys.stderr)
+        # Multi-pass search with different query cleaning
+        all_results = []
 
-        # Second pass: aggressive cleaning
-        pass2_query = self._clean_aggressive_query(decoded_what)
-        pass2_results = []
-        if pass2_query.lower() != pass1_query.lower():
+        # Pass 1: Original query
+        pass1_results = self._execute_search_pass(decoded_what, cat)
+        all_results.extend(pass1_results)
+
+        # Pass 2: Conservative cleaning
+        pass2_query = self._clean_conservative_query(decoded_what)
+        if pass2_query.lower() != decoded_what.lower():
             pass2_results = self._execute_search_pass(pass2_query, cat)
-            print(f"DEBUG: Pass 2 found {len(pass2_results)} results", file=sys.stderr)
+            all_results.extend(pass2_results)
 
-        # Deduplicate results
-        all_torrents = {t['desc_link']: t for t in pass1_results + pass2_results}
-        final_candidates = list(all_torrents.values())
-        print(f"DEBUG: Total unique torrents: {len(final_candidates)}", file=sys.stderr)
+        # Pass 3: Aggressive cleaning
+        pass3_query = self._clean_aggressive_query(decoded_what)
+        if pass3_query.lower() not in [decoded_what.lower(), pass2_query.lower()]:
+            pass3_results = self._execute_search_pass(pass3_query, cat)
+            all_results.extend(pass3_results)
+
+        # Deduplicate by desc_link
+        unique_torrents = {}
+        for torrent in all_results:
+            desc_link = torrent['desc_link']
+            if desc_link not in unique_torrents:
+                unique_torrents[desc_link] = torrent
+
+        final_candidates = list(unique_torrents.values())
 
         if not final_candidates:
             return
 
-        # Score and sort torrents
+        # Score and sort torrents by relevance
         for torrent in final_candidates:
             torrent['score'] = self._calculate_score(torrent['name'], search_keywords)
             try:
-                torrent['seeds_int'] = int(torrent['seeds'])
-            except ValueError:
+                torrent['seeds_int'] = int(torrent['seeds']) if torrent['seeds'] != '-1' else 0
+            except (ValueError, TypeError):
                 torrent['seeds_int'] = 0
 
         final_candidates.sort(key=lambda t: (t['score'], t['seeds_int']), reverse=True)
 
-        # Select top and safety net torrents
+        # Select torrents for magnet fetching
         torrents_to_fetch = []
         if final_candidates:
             max_score = final_candidates[0]['score']
             top_tier = [t for t in final_candidates if t['score'] == max_score]
             torrents_to_fetch.extend(top_tier)
+
+            # Add safety net from lower scoring results
             lower_tier = [t for t in final_candidates if t['score'] < max_score]
             torrents_to_fetch.extend(lower_tier[:self.SAFETY_NET_RESULTS_COUNT])
-            print(f"DEBUG: Fetching {len(torrents_to_fetch)} torrents", file=sys.stderr)
 
         # Fetch magnet links in parallel
         with ThreadPoolExecutor(max_workers=self.MAX_MAGNET_WORKERS) as executor:
-            futures = [executor.submit(self._fetch_magnet_link, t) for t in torrents_to_fetch]
+            futures = {}
+            for torrent in torrents_to_fetch:
+                torrent_dict = {
+                    'name': torrent['name'],
+                    'size': torrent['size'],
+                    'seeds': torrent['seeds'],
+                    'leech': torrent['leech'],
+                    'engine_url': self.url,
+                    'desc_link': torrent['desc_link'],
+                    'link': '-1'
+                }
+                future = executor.submit(self._fetch_magnet_link, torrent)
+                futures[future] = torrent_dict
+
             for future in as_completed(futures):
+                torrent_dict = futures[future]
                 if result := future.result():
-                    prettyPrinter({
-                        'link': result['link'],
-                        'name': result['name'],
-                        'size': result['size'],
-                        'seeds': result['seeds'],
-                        'leech': result['leech'],
-                        'engine_url': self.url,
-                        'desc_link': result['desc_link']
-                    })
+                    torrent_dict['link'] = result['link']
+                prettyPrinter(torrent_dict)
 
     def download_torrent(self, info):
         """Download magnet link for a torrent."""
         try:
             html = retrieve_url(info)
-            match = re.search(r'href=["\'](.*?(magnet.+?))["\']', html)
-            if match:
-                magnet = unquote(match.group(1))
+            magnet_match = re.search(r'href=["\'](magnet:\?[^"\']+)["\']', html, re.IGNORECASE)
+            if magnet_match:
+                magnet = unquote(magnet_match.group(1))
                 print(f"{magnet} {info}")
-            else:
-                print(f"DEBUG: No magnet link found for {info}", file=sys.stderr)
         except Exception as e:
-            if __name__ == '__main__':
-                print(f"Error downloading torrent: {e}", file=sys.stderr)
+            print(f"DEBUG: Error downloading torrent: {e}", file=sys.stderr)
+
+if __name__ == "__main__":
+    engine = torrentproject()
+    engine.search('Breaking Bad S02E07')
