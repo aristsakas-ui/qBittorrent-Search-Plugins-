@@ -1,5 +1,7 @@
-# VERSION: 1.0 (Intelligent Version with API, Advanced Query Cleaning, and Custom Sorting)
-# AUTHORS: Lyra Aranha (lyra@lazulyra.com)but improved by me
+# AUTHORS: Lyra Aranha (lyra@lazulyra.com) 
+# improved by me
+
+
 
 import re
 import json
