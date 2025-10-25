@@ -4,9 +4,9 @@ Tested on qBittorrent v5.1.0 Python 3.9.13
 
 3 scrape the torrent sites and 2 use the apis and try to sort the most relevant results 
 
-leetx.py is a plugin for the -official- 1337x site
+leetx.py is a plugin for the _official_ 1337x site
 
-IMPORTANT: x1337xtube.py is NOT an official mirror of x1337x but contains all of it's torrents. -Use at your own risk-
+IMPORTANT: x1337xtube.py is NOT an official mirror of x1337x but contains all of it's torrents. _Use at your own risk_
 
 # Dependencies Installation Guide
 
