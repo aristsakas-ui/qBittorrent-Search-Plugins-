@@ -6,7 +6,7 @@ Tested on qBittorrent v5.1.0 Python 3.9.13
 
 leetx.py is a plugin for the _official_ 1337x site
 
-IMPORTANT: x1337xtube.py is NOT an official mirror of x1337x but contains all of it's torrents. Use at your own risk__
+IMPORTANT: x1337xtube.py is NOT an official mirror of x1337x but contains all of it's torrents. _Use at your own risk__
 
 # Dependencies Installation Guide
 
