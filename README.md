@@ -2,7 +2,7 @@ Python "intelligent" scripts fully working IMPORTANT all require the installatio
 
 Tested on qBittorrent v5.1.0 Python 3.9.13
 
-3 scrape the torrent sites and 2 use the apis and try to sort the most relevant results 
+6 scrape the torrent sites and 1 uses the api . All try to sort the most relevant results 
 
 leetx.py is a plugin for the _official_ 1337x site
 
