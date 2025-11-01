@@ -1,8 +1,5 @@
 #
-# qBittorrent search plugin for Bitsearch - Fixed Category Version
-#
-# Fixed category filtering and improved deduplication
-#
+# qBittorrent search plugin for Bitsearch 
 
 import re
 import urllib.parse
