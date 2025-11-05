@@ -2,7 +2,7 @@ Python "intelligent" scripts fully working IMPORTANT all require the installatio
 
 Tested and working on qBittorrent v5.1.0 with Python 3.9.13 AND ON qBittorrent v5.1.2 AND Python 3.14.0
 
-Remember to delete the folder __pycache__ EACH TIME you add a new plugin. The folder will outo generate the next time you open Qbittorrent and will load the new plugin
+Remember to delete the folder __pycache__ EACH TIME you add a new plugin. The folder will auto generate the next time you open Qbittorrent and will load the new plugin
 
 5 scrape the torrent sites and 2 uses the api . All try to sort the most relevant results 
 
