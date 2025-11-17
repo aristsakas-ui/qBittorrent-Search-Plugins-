@@ -1,8 +1,27 @@
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License
+
+"""
+1337x Torrent Search Engine Plugin
+
+This script implements an intelligent torrent search engine for 1337x that uses
+exact phrase matching to improve relevance filtering. It also fetches magnet links
+for the search results.
+
+The script processes search terms and torrent titles by normalizing text.
+It then applies a scoring system that prioritizes torrents
+where the search phrase appears as a contiguous sequence in the title.
+
+Results are filtered to only include torrents with exact phrase matches and
+sorted by seed count to prioritize well-seeded content.
+"""
+
+
 from __future__ import print_function
 import re
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from collections import Counter
 
 try:
     from urllib.parse import quote_plus, unquote_plus
@@ -17,311 +36,204 @@ try:
 except ImportError:
     pass
 
-# --- User-Configurable Settings ---
-MAX_PAGES_TO_FETCH = 2
-MAX_MAGNET_WORKERS = 10
-SAFETY_NET_RESULTS_COUNT = 5
 
+
+# --- Configuration ---
+MAX_PAGES_TO_FETCH = 2  # Number of search result pages to scrape
+MAX_MAGNET_WORKERS = 10  # Maximum concurrent workers for magnet link fetching
 LEETX_DOMAIN = "https://1337x.to"
-
 
 class leetx(object):
     url = LEETX_DOMAIN
-    name = "1337x (Intelligent)"
+    name = "1337x (Enhanced)"
+    supported_categories = { 'all': 'All', 'movies': 'Movies', 'tv': 'TV', 'music': 'Music', 'games': 'Games', 'anime': 'Anime', 'software': 'Apps' }
 
-    supported_categories = {
-        'all': 'All',
-        'movies': 'Movies',
-        'tv': 'TV',
-        'music': 'Music',
-        'games': 'Games',
-        'anime': 'Anime',
-        'software': 'Apps'
-    }
+    def __init__(self):
+        self.search_term = ""
+        self.search_url = ""
 
-    # --- Intelligent Search Methods from Second Script ---
-
-    def _get_conservative_query(self, query):
-        """
-        PASS 1: The smart, conservative cleaning method.
-        Only removes unambiguous metadata (like years in parentheses) and preserves important symbols.
-        """
-        # Remove year in parentheses, e.g., (1965) or [2022]
-        query = re.sub(r'[\(\[]\d{4}[\)\]]', '', query)
-        # Clean up multiple spaces
-        query = re.sub(r'\s+', ' ', query)
-        return query.strip()
-
-    def _get_aggressive_query(self, query):
-        """
-        PASS 2: The aggressive, fallback cleaning method.
-        Removes ALL symbols for titles with junk punctuation.
-        """
+    def _get_search_words(self, query):
+        """Normalize and clean search query into word list for matching"""
+        query = query.replace('&', ' and ')
         query = re.sub(r'[^a-zA-Z0-9\s]', ' ', query)
-        query = re.sub(r'\s+', ' ', query)
-        return query.strip()
+        query = re.sub(r'\s+', ' ', query).strip().lower()
+        words = query.split()
+        return words
 
-    def _get_keywords_for_scoring(self, query):
-        """Cleans a string to generate keywords for scoring."""
-        query = re.sub(r'[^a-zA-Z0-9]', ' ', query)
-        query = re.sub(r'\s+', ' ', query)
-        # Exclude single-letter words as poor keywords
-        return [word for word in query.strip().lower().split() if len(word) > 1]
+    def _calculate_advanced_score(self, torrent_title, search_words):
+        """Score torrents based on exact phrase match position in title"""
+        cleaned_title_words = self._get_search_words(torrent_title)
 
-    def _calculate_advanced_score(self, torrent_title, search_keywords):
-        """Calculates score using two-part system: completeness bonus + term frequency."""
-        title_lower = torrent_title.lower()
-        title_keywords = self._get_keywords_for_scoring(title_lower)
-        title_word_counts = Counter(title_keywords)
-        search_word_counts = Counter(search_keywords)
-        unique_search_words = set(search_keywords)
+        try:
+            # Check for exact sequence match in title words
+            for i in range(len(cleaned_title_words) - len(search_words) + 1):
+                if cleaned_title_words[i : i + len(search_words)] == search_words:
+                    if i == 0:
+                        return 800  # Highest score: phrase at beginning
+                    else:
+                        return 600  # Good score: phrase contained in title
+        except (ValueError, IndexError):
+            return 0
 
-        # Completeness bonus: +100 if title contains ALL search words
-        bonus_score = 0
-        if unique_search_words and all(word in title_word_counts for word in unique_search_words):
-            bonus_score = 100
+        return 0  # No match found
 
-        # Term frequency score
-        base_score = 0
-        for word, count_in_search in search_word_counts.items():
-            count_in_title = title_word_counts.get(word, 0)
-            base_score += min(count_in_search, count_in_title)
+    def _filter_irrelevant_results(self, results):
+        """Filter out torrents that don't meet the minimum relevance score"""
+        relevant_results = []
+        score_threshold = 600  # Only include torrents with exact phrase matches
 
-        return bonus_score + base_score
+        for result in results:
+            if result['score'] >= score_threshold:
+                relevant_results.append(result)
 
-    def _execute_search_pass(self, query, cat):
-        """Executes one full search pass with the given query."""
-        if not query:
-            return []
+        return relevant_results
 
-        # Build search URL based on category
-        search_page = "search" if cat == 'all' else 'category-search'
+    def _build_search_url(self, query, cat, page=1):
+        """Construct the search URL for 1337x"""
         encoded_query = quote_plus(query)
+        if cat == 'all':
+            return f"{self.url}/search/{encoded_query}/{page}/"
+        else:
+            category_name = self.supported_categories.get(cat, 'All')
+            return f"{self.url}/category-search/{encoded_query}/{category_name}/{page}/"
 
-        search_url = f"{self.url}/{search_page}/{encoded_query}/"
-        if cat != 'all' and cat in self.supported_categories:
-            search_url += self.supported_categories[cat] + "/"
+    def _fetch_magnet_link(self, desc_link):
+        """Fetch magnet link from individual torrent description page"""
+        try:
+            page_html = retrieve_url(desc_link)
+            soup = BeautifulSoup(page_html, 'html.parser')
+            magnet_link = soup.find('a', href=re.compile(r'^magnet:'))
+            if magnet_link:
+                return magnet_link['href']
+        except Exception:
+            pass
+        return None
 
-        url_template = search_url + "{page_num}/"
-
-        # Fetch multiple pages in parallel
-        pass_torrents = []
-        with ThreadPoolExecutor(max_workers=MAX_PAGES_TO_FETCH) as executor:
-            futures = [
-                executor.submit(self._fetch_and_parse_page, i, url_template, cat)
-                for i in range(1, MAX_PAGES_TO_FETCH + 1)
-            ]
-            for future in as_completed(futures):
-                pass_torrents.extend(future.result())
-
-        return pass_torrents
-
-    def _fetch_and_parse_page(self, page_num, url_template, cat):
-        """Fetches and parses a single page using BeautifulSoup."""
-        page_url = url_template.format(page_num=page_num)
+    def _fetch_and_parse_page(self, page_num, search_url_template, cat):
+        """Fetch and parse a single search results page"""
+        page_url = search_url_template.format(page_num=page_num)
         try:
             page_html = retrieve_url(page_url)
             soup = BeautifulSoup(page_html, 'html.parser')
-
-            # Find the results table
             table = soup.find('table', class_='table-list')
             if not table:
                 return []
-
         except Exception:
             return []
 
         page_torrents = []
-
-        # Find all torrent rows (skip header if present)
         rows = table.find_all('tr')[1:] if table.find('tr') else []
 
         for row in rows:
             try:
-                result = {
-                    'engine_url': self.url,
-                    'leech': '0',
-                    'leeches': '0'
-                }
-
-                # Extract torrent name and link
+                result = {'engine_url': self.url, 'leech': '0', 'leeches': '0'}
                 name_link = row.find('a', href=re.compile(r'/torrent/'))
-                if name_link:
-                    result['name'] = name_link.get_text(strip=True)
-                    result['desc_link'] = self.url + name_link['href']
-                    result['link'] = self.url + name_link['href']  # Will be replaced with magnet
+                if not name_link: continue
 
-                # Extract seeds, leeches, size from table cells
+                result['name'] = name_link.get_text(strip=True)
+                result['desc_link'] = self.url + name_link['href']
+                result['link'] = self.url + name_link['href']  # Initial link to description page
+
                 cells = row.find_all('td')
-                for i, cell in enumerate(cells):
-                    cell_text = cell.get_text(strip=True)
-                    cell_class = cell.get('class', [])
+                result['seeds'] = cells[1].get_text(strip=True)
+                result['leeches'] = result['leech'] = cells[2].get_text(strip=True)
 
-                    # Use class-based detection first
-                    if 'seeds' in str(cell_class):
-                        result['seeds'] = cell_text
-                    elif 'leeches' in str(cell_class):
-                        result['leeches'] = cell_text
-                        result['leech'] = cell_text
-                    elif 'size' in str(cell_class):
-                        result['size'] = cell_text.split('\n')[0].strip()  # Clean size
+                size_cell = row.find('td', class_='size')
+                if size_cell:
+                    result['size'] = size_cell.get_text(strip=True).split('B')[0] + 'B'
+                else:
+                    result['size'] = cells[3].get_text(strip=True).split('B')[0] + 'B'
 
-                    # Fallback: use position-based detection
-                    elif i == 1 and 'seeds' not in result:
-                        result['seeds'] = cell_text
-                    elif i == 2 and 'leeches' not in result:
-                        result['leeches'] = cell_text
-                        result['leech'] = cell_text
-                    elif i == 3 and 'size' not in result:
-                        result['size'] = cell_text
-
-                # Ensure we have all required fields
                 if result.get('name') and result.get('seeds'):
                     page_torrents.append(result)
-
-            except (IndexError, AttributeError, KeyError):
+            except Exception:
                 continue
 
         return page_torrents
 
-    def _fetch_magnet_link(self, torrent):
-        """Fetches magnet link from torrent detail page."""
-        try:
-            details_page = retrieve_url(torrent['desc_link'])
-            soup = BeautifulSoup(details_page, 'html.parser')
+    def _deduplicate_results(self, results):
+        """Remove duplicate torrents based on exact name matching"""
+        seen_names = set()
+        unique_results = []
 
-            # Look for magnet link - multiple strategies
-            magnet_link = None
+        for result in results:
+            if result['name'] not in seen_names:
+                unique_results.append(result)
+                seen_names.add(result['name'])
 
-            # Strategy 1: Look for magnet link by href pattern
-            magnet_anchors = soup.find_all('a', href=re.compile(r'^magnet:'))
-            if magnet_anchors:
-                magnet_link = magnet_anchors[0]['href']
-
-            # Strategy 2: Look for download buttons
-            if not magnet_link:
-                download_btns = soup.find_all('a', class_=re.compile(r'download|magnet'))
-                for btn in download_btns:
-                    href = btn.get('href', '')
-                    if href.startswith('magnet:'):
-                        magnet_link = href
-                        break
-
-            # Strategy 3: Look for itorrents mirror
-            if not magnet_link:
-                itorrents_btn = soup.find('a', string=re.compile(r'ITORRENTS', re.I))
-                if itorrents_btn and itorrents_btn.get('href'):
-                    magnet_link = itorrents_btn['href']
-
-            if magnet_link:
-                torrent['link'] = magnet_link
-                return torrent
-
-        except Exception:
-            pass
-
-        return None
+        return unique_results
 
     def download_torrent(self, info):
-        """Download torrent file - uses magnet links primarily."""
-        # Since we now use magnet links, we can simply call download_file
-        # But we need to ensure it's a magnet link
+        """Handle torrent download (required by search engine interface)"""
         if info.startswith('magnet:'):
             print(download_file(info))
         else:
-            # Fallback to torrent file download
-            try:
-                page_html = retrieve_url(info)
-                soup = BeautifulSoup(page_html, 'html.parser')
-
-                # Look for direct torrent download
-                torrent_links = soup.find_all('a', href=re.compile(r'\.torrent$'))
-                if torrent_links:
-                    torrent_file = torrent_links[0]['href']
-                    if torrent_file.startswith('//'):
-                        torrent_file = 'https:' + torrent_file
-                    elif torrent_file.startswith('/'):
-                        torrent_file = self.url + torrent_file
-
-                    print(download_file(torrent_file))
-                    return
-
-                # Fallback to magnet link
-                magnet_links = soup.find_all('a', href=re.compile(r'^magnet:'))
-                if magnet_links:
-                    print(download_file(magnet_links[0]['href']))
-                    return
-
-                print('')
-            except Exception:
-                print('')
+            print('')
 
     def search(self, what, cat='all'):
-        """Main search function with intelligent multi-pass strategy."""
+        """Main search function - orchestrates the entire search process"""
         if 'BeautifulSoup' not in globals():
             return
 
-        # Decode the search query
-        decoded_what = unquote_plus(what)
-        search_keywords = self._get_keywords_for_scoring(decoded_what)
+        self.search_term = unquote_plus(what)
+        search_words = self._get_search_words(self.search_term)
+        self.search_url = self._build_search_url(self.search_term, cat, 1)
 
-        # --- Multi-Pass Search Execution ---
-        # PASS 1: Conservative approach (preserves important symbols)
-        pass1_query = self._get_conservative_query(decoded_what)
-        pass1_results = self._execute_search_pass(pass1_query, cat)
+        # Step 1: Fetch search results from multiple pages concurrently
+        all_torrents = []
+        url_template = self._build_search_url(self.search_term, cat, "{page_num}")
 
-        # PASS 2: Aggressive approach (removes all symbols)
-        pass2_query = self._get_aggressive_query(decoded_what)
-        pass2_results = []
-        if pass2_query.lower() != pass1_query.lower():
-            pass2_results = self._execute_search_pass(pass2_query, cat)
+        with ThreadPoolExecutor(max_workers=MAX_PAGES_TO_FETCH) as executor:
+            futures = [executor.submit(self._fetch_and_parse_page, i, url_template, cat)
+                      for i in range(1, MAX_PAGES_TO_FETCH + 1)]
+            for future in as_completed(futures):
+                all_torrents.extend(future.result())
 
-        # --- De-duplication and Scoring ---
-        all_torrents = {t['desc_link']: t for t in pass1_results + pass2_results}
-        final_candidates = list(all_torrents.values())
+        # Step 2: Remove duplicate torrents
+        unique_torrents = self._deduplicate_results(all_torrents)
 
-        if not final_candidates:
+        if not unique_torrents:
             return
 
-        # Apply advanced scoring
-        for torrent in final_candidates:
-            torrent['score'] = self._calculate_advanced_score(torrent['name'], search_keywords)
+        # Step 3: Fetch magnet links for all torrents concurrently
+        with ThreadPoolExecutor(max_workers=MAX_MAGNET_WORKERS) as executor:
+            future_to_torrent = {
+                executor.submit(self._fetch_magnet_link, torrent['desc_link']): torrent
+                for torrent in unique_torrents
+            }
+
+            for future in as_completed(future_to_torrent):
+                torrent = future_to_torrent[future]
+                try:
+                    magnet_link = future.result()
+                    if magnet_link:
+                        torrent['link'] = magnet_link  # Replace description link with magnet link
+                except Exception:
+                    pass
+
+        # Step 4: Score and filter torrents based on relevance
+        for torrent in unique_torrents:
+            torrent['score'] = self._calculate_advanced_score(torrent['name'], search_words)
             try:
-                torrent['seeds_int'] = int(torrent['seeds'])
+                torrent['seeds_int'] = int(torrent['seeds'].replace(',', ''))
             except (ValueError, KeyError):
                 torrent['seeds_int'] = 0
 
-        # Sort by score (primary) and seeds (secondary)
-        final_candidates.sort(key=lambda t: (t['score'], t['seeds_int']), reverse=True)
+        relevant_torrents = self._filter_irrelevant_results(unique_torrents)
 
-        # --- Select Results: Top Tier + Safety Net ---
-        torrents_to_fetch = []
-        if final_candidates:
-            max_score = final_candidates[0]['score']
+        if not relevant_torrents:
+            return
 
-            # Add all top-scoring torrents
-            top_tier = [t for t in final_candidates if t['score'] == max_score]
-            torrents_to_fetch.extend(top_tier)
+        # Step 5: Sort by seed count and output results
+        relevant_torrents.sort(key=lambda t: t['seeds_int'], reverse=True)
 
-            # Add safety net of lower-scoring results
-            lower_tier = [t for t in final_candidates if t['score'] < max_score]
-            torrents_to_fetch.extend(lower_tier[:SAFETY_NET_RESULTS_COUNT])
-
-        # --- Fetch Magnet Links in Parallel ---
-        with ThreadPoolExecutor(max_workers=MAX_MAGNET_WORKERS) as executor:
-            futures = [executor.submit(self._fetch_magnet_link, t) for t in torrents_to_fetch]
-            for future in as_completed(futures):
-                result = future.result()
-                if result:
-                    # Clean filename for printing
-                    safe_name = re.sub(r'[\\/*?:"<>|]', '', result['name'])
-
-                    prettyPrinter({
-                        'link': result['link'],
-                        'name': safe_name,
-                        'size': result.get('size', ''),
-                        'seeds': result.get('seeds', '0'),
-                        'leech': result.get('leech', '0'),
-                        'engine_url': self.url,
-                        'desc_link': result['desc_link']
-                    })
+        for result in relevant_torrents:
+            prettyPrinter({
+                'link': result['link'],
+                'name': result['name'],
+                'size': result.get('size', ''),
+                'seeds': result.get('seeds', '0'),
+                'leech': result.get('leech', '0'),
+                'engine_url': self.url,
+                'desc_link': result.get('desc_link', '')
+            })
