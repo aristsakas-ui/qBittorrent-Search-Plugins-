@@ -6,9 +6,11 @@ Remember to delete the folder __pycache__ EACH TIME you add a new plugin. The fo
 
 5 scrape the torrent sites and 2 uses the api . All try to sort the most relevant results 
 
-leetx.py is a plugin for the _official_ 1337x site
+Scripts that do _not_ work anymore leetx.py  yts_mx.py
 
 IMPORTANT: x1337xtube.py is NOT an official mirror of x1337x but contains all of it's torrents. _Use at your own risk_
+
+leetx.py is a plugin for the _official_ 1337x site
 
 # Dependencies Installation Guide
 
