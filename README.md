@@ -4,7 +4,7 @@ Tested and working on qBittorrent v5.1.0 with Python 3.9.13 AND ON qBittorrent v
 
 Remember to delete the folder __pycache__ EACH TIME you add a new plugin. The folder will auto generate the next time you open Qbittorrent and will load the new plugin
 
-5 scrape the torrent sites and 2 uses the api . All try to sort the most relevant results 
+7 scrape the torrent sites and 2 uses the api . All try to sort the most relevant results 
 
 Scripts that do _not_ work anymore leetx.py  yts_mx.py
 
