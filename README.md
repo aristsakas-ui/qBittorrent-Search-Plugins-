@@ -1,3 +1,6 @@
+
+Scripts that do _not_ work anymore leetx.py  and  yts_mx.py
+
 Python "intelligent" scripts fully working IMPORTANT all require the installation of a library
 
 Tested and working on qBittorrent v5.1.0 with Python 3.9.13 AND ON qBittorrent v5.1.2 AND Python 3.14.0
@@ -5,8 +8,6 @@ Tested and working on qBittorrent v5.1.0 with Python 3.9.13 AND ON qBittorrent v
 Remember to delete the folder __pycache__ EACH TIME you add a new plugin. The folder will auto generate the next time you open Qbittorrent and will load the new plugin
 
 7 scrape the torrent sites and 2 uses the api . All try to sort the most relevant results 
-
-Scripts that do _not_ work anymore leetx.py  and  yts_mx.py
 
 IMPORTANT: x1337xtube.py is NOT an official mirror of x1337x but contains all of it's torrents. _Use at your own risk_
 
