@@ -8,6 +8,7 @@
 # Description: Search plugin for TorrentGalaxy.one.
 #              Features exact-match filtering (removes wildcard results like 'Ramona' for 'Rambo'),
 #              multi-page scraping for Movies/TV (tunable), and robust date/size extraction.
+#              Cleans search queries to ensure compatibility with the search engine.
 #
 
 import re
