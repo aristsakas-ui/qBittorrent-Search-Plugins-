@@ -1,14 +1,11 @@
 # -*- coding: utf-8 -*-
-#VERSION: 3.2
-#AUTHORS: Me
+#VERSION: 3.5
 #
 # qBittorrent Search Plugin for TorrentGalaxy
 #
 # License: GPL v3
 # Description: Search plugin for TorrentGalaxy.one.
-#              Features exact-match filtering (removes wildcard results like 'Ramona' for 'Rambo'),
-#              multi-page scraping for Movies/TV (tunable), and robust date/size extraction.
-#              Cleans search queries to ensure compatibility with the search engine.
+#              Features exact-match filtering, magnet link fetching, and tunable configuration.
 #
 
 import re
@@ -18,43 +15,40 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- Configuration ---
 # Number of pages to scrape for specific categories
-MOVIES_PAGES = 2
-TV_PAGES = 2
-DEFAULT_PAGES = 1
+PAGES_MOVIES = 2
+PAGES_TV = 2
+PAGES_DEFAULT = 1
+
+# Max number of parallel threads for fetching magnet links
+# Lower this if you experience timeouts or bans.
+MAX_WORKERS = 5
+
+# Maximum number of torrents with 0 seeders to include in results.
+# Set to -1 for unlimited.
+MAX_NO_SEED_RESULTS = 5
 # ---------------------
 
-# Environment detection for qBittorrent
 try:
     from novaprinter import prettyPrinter
     from helpers import retrieve_url
-    QBITTORRENT_ENV = True
 except ImportError:
-    QBITTORRENT_ENV = False
     import urllib.request
     def prettyPrinter(dict):
-        print(f"RESULT: {dict.get('name')} | Size: {dict.get('size')} | Date: {dict.get('pub_date')}")
+        print(f"Name: {dict['name']} | Size: {dict['size']} | S/L: {dict['seeds']}/{dict['leech']}")
     def retrieve_url(url):
         try:
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-            parsed = urllib.parse.urlsplit(url)
-            parsed = parsed._replace(path=urllib.parse.quote(parsed.path))
-            req = urllib.request.Request(parsed.geturl(), headers=headers)
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0'}
+            req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=10) as response:
                 return response.read().decode('utf-8')
         except: return ""
 
 try:
     from bs4 import BeautifulSoup, NavigableString
-    BEAUTIFULSOUP_AVAILABLE = True
 except ImportError:
-    BEAUTIFULSOUP_AVAILABLE = False
-    if not QBITTORRENT_ENV:
-        print("ERROR: Install beautifulsoup4: pip install beautifulsoup4")
+    pass
 
 class torrentgalaxy_one(object):
-    """
-    Main plugin class for TorrentGalaxy search.
-    """
     url = 'https://torrentgalaxy.one'
     name = 'TorrentGalaxy'
 
@@ -64,21 +58,16 @@ class torrentgalaxy_one(object):
     }
 
     def _clean_query_strict(self, query):
-        """
-        Sanitizes the query by removing special characters and excess whitespace.
-        """
+        """Sanitizes the query by removing special characters and excess whitespace."""
         cleaned = re.sub(r'[^a-zA-Z0-9\s]', ' ', query)
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
         return cleaned
 
     def _verify_match(self, user_query, result_title):
-        """
-        Ensures the result contains the exact word/phrase requested.
-        """
+        """Strict matching: ensures exact word presence."""
         try:
             q_clean = self._clean_query_strict(user_query).lower()
             t_clean = self._clean_query_strict(result_title).lower()
-            # Regex boundary check for exact word matching
             pattern = r'\b' + re.escape(q_clean) + r'\b'
             if re.search(pattern, t_clean):
                 return True
@@ -86,24 +75,19 @@ class torrentgalaxy_one(object):
         except:
             return user_query.lower() in result_title.lower()
 
-    def _extract_size_from_row(self, row):
-        """
-        Iterates through spans to find the file size badge.
-        """
+    def _extract_size(self, row):
+        """Iterates through spans to find the file size badge."""
         try:
-            size_spans = row.find_all('span', class_='badge badge-secondary txlight', style='border-radius:4px;')
-            for span in size_spans:
-                size_text = span.text.strip().replace('&nbsp;', ' ').replace('\xa0', ' ')
-                if any(unit in size_text.upper() for unit in ['GB', 'MB', 'KB', 'TB']):
-                    return size_text
+            spans = row.find_all('span', class_='badge badge-secondary txlight')
+            for span in spans:
+                text = span.text.strip().replace('&nbsp;', ' ').replace('\xa0', ' ')
+                if any(unit in text.upper() for unit in ['GB', 'MB', 'KB', 'TB']):
+                    return text
             return '0 MB'
-        except:
-            return '0 MB'
+        except: return '0 MB'
 
     def _extract_seeds_leech(self, cell):
-        """
-        Parses the seeders/leechers from color-coded HTML elements.
-        """
+        """Parses the seeders/leechers from color-coded HTML elements."""
         try:
             text = str(cell)
             seeds_match = re.search(r'color="green"[^>]*>.*?<b>(\d+)</b>', text, re.IGNORECASE)
@@ -111,23 +95,18 @@ class torrentgalaxy_one(object):
             seeds = seeds_match.group(1) if seeds_match else '0'
             leech = leech_match.group(1) if leech_match else '0'
             return seeds, leech
-        except:
-            return '0', '0'
+        except: return '0', '0'
 
     def _parse_date(self, date_str):
-        """
-        Converts relative date strings into Epoch timestamps.
-        """
+        """Converts relative date strings into Epoch timestamps."""
         try:
-            clean_str = date_str.lower().replace('&nbsp;', ' ').replace('\xa0', ' ').strip()
+            clean_str = date_str.lower().replace('&nbsp;', ' ').strip()
             now = time.time()
-
             if 'today' in clean_str: return int(now)
             if 'yesterday' in clean_str: return int(now - 86400)
 
             seconds = 0
             matches = re.findall(r'(\d+)\W+(year|month|week|day|hour|min|sec)', clean_str)
-
             for num, unit in matches:
                 n = int(num)
                 if 'year' in unit: seconds += n * 31536000
@@ -137,66 +116,47 @@ class torrentgalaxy_one(object):
                 elif 'hour' in unit: seconds += n * 3600
                 elif 'min' in unit: seconds += n * 60
                 elif 'sec' in unit: seconds += n
-
             return int(now - seconds)
-        except:
-            return -1
+        except: return -1
 
-    def _fetch_magnet_link(self, torrent):
-        """
-        Fetches the details page to retrieve the magnet link.
-        """
+    def _get_magnet(self, torrent_data):
+        """Fetches the details page to retrieve the magnet link."""
         try:
-            details_html = retrieve_url(torrent['desc_link'])
-            if not details_html: return None
-
-            soup = BeautifulSoup(details_html, 'html.parser')
-            magnet_anchor = soup.find('a', href=re.compile(r'^magnet:\?'))
-
-            if magnet_anchor:
-                torrent['link'] = magnet_anchor.get('href')
-                return torrent
+            html = retrieve_url(torrent_data['desc_link'])
+            if not html: return None
+            soup = BeautifulSoup(html, 'html.parser')
+            magnet = soup.find('a', href=re.compile(r'^magnet:\?'))
+            if magnet:
+                torrent_data['link'] = magnet.get('href')
+                return torrent_data
         except: pass
         return None
 
     def search(self, what, cat='all'):
-        """
-        Main search execution method.
-        """
-        if not BEAUTIFULSOUP_AVAILABLE: return
-
         query_unquoted = urllib.parse.unquote(what)
         clean_query = self._clean_query_strict(query_unquoted)
         if not clean_query: return
 
         target_cat_name = self.supported_categories.get(cat, '')
-        use_python_filtering = False
 
-        # Configure pagination and filtering
-        pages_to_scrape = DEFAULT_PAGES
-        if cat == 'movies':
-            pages_to_scrape = MOVIES_PAGES
-            use_python_filtering = True
-        elif cat == 'tv':
-            pages_to_scrape = TV_PAGES
-            use_python_filtering = True
+        # Determine page count based on config
+        pages_to_scrape = PAGES_DEFAULT
+        if cat == 'movies': pages_to_scrape = PAGES_MOVIES
+        elif cat == 'tv': pages_to_scrape = PAGES_TV
 
         encoded_query = urllib.parse.quote(clean_query)
         base_url = f"{self.url}/get-posts/keywords:{encoded_query}"
 
-        if use_python_filtering or not target_cat_name or target_cat_name == 'all':
-            search_url_root = f"{base_url}"
+        if not target_cat_name or target_cat_name == 'all':
+            search_url_root = base_url
         else:
             search_url_root = f"{base_url}:category:{target_cat_name}"
 
-        all_torrents = []
+        torrents_to_process = []
+        zero_seed_count = 0
 
-        # Multi-page Loop
         for page in range(1, pages_to_scrape + 1):
-            if page > 1:
-                current_url = f"{search_url_root}/?page={page}"
-            else:
-                current_url = f"{search_url_root}/"
+            current_url = f"{search_url_root}/?page={page}" if page > 1 else f"{search_url_root}/"
 
             html = retrieve_url(current_url)
             if not html: continue
@@ -209,18 +169,10 @@ class torrentgalaxy_one(object):
                     cells = row.find_all('div', class_='tgxtablecell')
                     if len(cells) < 5: continue
 
-                    # 1. Category Filter
-                    if use_python_filtering:
-                        category_elem = cells[0].find('small')
-                        if category_elem and category_elem.text.strip() != target_cat_name:
-                            continue
-                        elif not category_elem: continue
-
-                    # 2. Extract Title
+                    # 1. Title Extraction
                     title_cell = None
                     for cell in cells:
-                        cell_classes = cell.get('class', [])
-                        if ('clickable-row' in cell_classes or 'click' in cell_classes) and cell.find('a', class_='txlight'):
+                        if cell.find('a', class_='txlight') and ('clickable-row' in cell.get('class', []) or 'click' in cell.get('class', [])):
                             title_cell = cell
                             break
                     if not title_cell: continue
@@ -228,33 +180,41 @@ class torrentgalaxy_one(object):
                     title_anchor = title_cell.find('a', class_='txlight')
                     title = title_anchor.get('title', '').strip() or title_anchor.text.strip()
 
-                    # 3. Exact Match Check
+                    # 2. Strict Matching
                     if not self._verify_match(clean_query, title):
                         continue
 
-                    # 4. Extract Link
-                    href = title_cell.get('data-href') or title_anchor.get('href', '')
-                    if not href: continue
-                    desc_link = href if href.startswith('http') else self.url + (href if href.startswith('/') else '/' + href)
-
-                    # 5. Extract Stats
-                    size = self._extract_size_from_row(row)
+                    # 3. Stats Extraction (Check seeds before adding)
                     seeds, leech = '0', '0'
                     for cell in cells:
                         if cell.find('span', title='Seeders/Leechers'):
                             seeds, leech = self._extract_seeds_leech(cell)
                             break
 
-                    # 6. Extract Date
+                    # Apply Zero Seeder Limit
+                    if int(seeds) == 0:
+                        if MAX_NO_SEED_RESULTS != -1 and zero_seed_count >= MAX_NO_SEED_RESULTS:
+                            continue
+                        zero_seed_count += 1
+
+                    # 4. Link Extraction
+                    href = title_cell.get('data-href') or title_anchor.get('href', '')
+                    if not href: continue
+                    desc_link = href if href.startswith('http') else self.url + (href if href.startswith('/') else '/' + href)
+
+                    # 5. Size Extraction
+                    size = self._extract_size(row)
+
+                    # 6. Date Extraction
                     pub_date = -1
                     if cells:
                         last_cell = cells[-1]
                         if last_cell.contents:
-                            first_content = last_cell.contents[0]
-                            if isinstance(first_content, NavigableString):
-                                pub_date = self._parse_date(str(first_content))
+                            first = last_cell.contents[0]
+                            if isinstance(first, NavigableString):
+                                pub_date = self._parse_date(str(first))
 
-                    all_torrents.append({
+                    torrents_to_process.append({
                         'name': title,
                         'link': '',
                         'size': size,
@@ -264,13 +224,12 @@ class torrentgalaxy_one(object):
                         'desc_link': desc_link,
                         'pub_date': pub_date
                     })
-
                 except: continue
 
-        # Retrieve Magnets
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = [executor.submit(self._fetch_magnet_link, t) for t in all_torrents]
+        # Parallel Magnet Fetching
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = [executor.submit(self._get_magnet, t) for t in torrents_to_process]
             for future in as_completed(futures):
-                if result := future.result():
-                    if result.get('link'):
-                        prettyPrinter(result)
+                if res := future.result():
+                    if res.get('link'):
+                        prettyPrinter(res)
