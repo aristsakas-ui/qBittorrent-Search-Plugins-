@@ -30,32 +30,41 @@ except ImportError:
 MAX_PAGES_TO_FETCH = 2
 MAX_MAGNET_WORKERS = 10
 LEETX_DOMAIN = "https://1337x.tube"
-MAX_ZERO_SEED_RESULTS = 5
 
-class x1337xtube:
+# Filtering Configuration
+MAX_DEAD_RESULTS = 5         # Maximum number of "Dead" torrents to show
+MIN_LEECHERS_THRESHOLD = 3   # If 0 Seeds, result must have at least this many leechers to be considered "Active"
+
+# --- Constants & Regex (Global) ---
+RE_MAGNET = re.compile(r'^magnet:')
+RE_TORRENT_LINK = re.compile(r'/torrent/')
+RE_ICON = re.compile(r'flaticon-')
+RE_ORDINAL = re.compile(r'(\d+)(st|nd|rd|th)')
+RE_NON_ALPHANUM = re.compile(r'[^a-z0-9]')
+
+CAT_KEYWORDS = {
+    'movies': ['movies'],
+    'tv': ['tv'],
+    'music': ['music'],
+    'games': ['games'],
+    'software': ['app', 'linux', 'windows', 'android', 'apple'],
+    'anime': ['anime'],
+    'books': ['documentary', 'other']
+}
+
+TIME_MULTIPLIERS = {
+    'min': 60,
+    'hour': 3600,
+    'day': 86400,
+    'week': 604800,
+    'month': 2592000,
+    'year': 31536000
+}
+
+class x1337xtube(object):
     url = LEETX_DOMAIN
-    name = "1337x Tube (Intelligent 2.1)"
-
+    name = "1337x Tube (Intelligent 2.3)"
     supported_categories = {'all': 'All', 'movies': 'Movies', 'tv': 'TV', 'music': 'Music', 'games': 'Games', 'anime': 'Anime', 'software': 'Software', 'books': 'Books'}
-
-    cat_keywords = {
-        'movies': ['movies'],
-        'tv': ['tv'],
-        'music': ['music'],
-        'games': ['games'],
-        'software': ['app', 'linux', 'windows', 'android', 'apple'],
-        'anime': ['anime'],
-        'books': ['documentary', 'other']
-    }
-
-    time_multipliers = {'min': 60, 'hour': 3600, 'day': 86400, 'week': 604800, 'month': 2592000, 'year': 31536000}
-
-    # Compiled Regex
-    RE_MAGNET = re.compile(r'^magnet:')
-    RE_TORRENT_LINK = re.compile(r'/torrent/')
-    RE_ICON = re.compile(r'flaticon-')
-    RE_ORDINAL = re.compile(r'(\d+)(st|nd|rd|th)')
-    RE_NON_ALPHANUM = re.compile(r'[^a-z0-9]') # Only lowercase needed due to _clean_string logic
 
     def __init__(self):
         self.search_term = ""
@@ -63,7 +72,7 @@ class x1337xtube:
     def _clean_string(self, text):
         """Standardizes strings: unquote, lowercase, remove symbols, fix spaces."""
         text = unquote_plus(text).lower()
-        text = self.RE_NON_ALPHANUM.sub(' ', text)
+        text = RE_NON_ALPHANUM.sub(' ', text)
         return ' '.join(text.split())
 
     def _parse_date(self, date_str):
@@ -76,12 +85,12 @@ class x1337xtube:
                 num_match = re.search(r'(\d+)', date_str)
                 if num_match:
                     num = int(num_match.group(1))
-                    for unit, mult in self.time_multipliers.items():
+                    for unit, mult in TIME_MULTIPLIERS.items():
                         if unit in date_str:
                             return int(time.time() - (num * mult))
 
             # Absolute Dates
-            clean_str = self.RE_ORDINAL.sub(r'\1', date_str)
+            clean_str = RE_ORDINAL.sub(r'\1', date_str)
             for fmt in ("%b. %d '%y", "%b %d '%y"):
                 try:
                     dt = datetime.strptime(clean_str, fmt)
@@ -94,10 +103,16 @@ class x1337xtube:
 
     def _fetch_magnet_link(self, desc_link):
         try:
-            if desc_link.startswith('/'): desc_link = self.url + desc_link
-            soup = BeautifulSoup(retrieve_url(desc_link), 'html.parser')
+            if desc_link.startswith('/'):
+                desc_link = self.url + desc_link
 
-            magnet = soup.find('a', href=self.RE_MAGNET) or soup.find('a', id='openPopup')
+            html = retrieve_url(desc_link)
+            soup = BeautifulSoup(html, 'html.parser')
+
+            magnet = soup.find('a', href=RE_MAGNET)
+            if not magnet:
+                magnet = soup.find('a', id='openPopup')
+
             if magnet and magnet.get('href'):
                 return magnet['href']
         except Exception:
@@ -105,7 +120,9 @@ class x1337xtube:
         return None
 
     def _fetch_and_parse_page(self, page_num, query):
-        url = f"{self.url}/search/?q={quote_plus(query)}&page={page_num}"
+        # Using .format() instead of f-string for compatibility
+        url = "{}/search/?q={}&page={}".format(self.url, quote_plus(query), page_num)
+
         try:
             html = retrieve_url(url)
             soup = BeautifulSoup(html, 'html.parser')
@@ -120,13 +137,13 @@ class x1337xtube:
         for row in rows:
             try:
                 # 1. Name & Link
-                name_link = row.find_all('a', href=self.RE_TORRENT_LINK)
+                name_link = row.find_all('a', href=RE_TORRENT_LINK)
                 if not name_link: continue
                 name_link = name_link[-1]
 
                 # 2. Icon Suffix (Category Detection)
                 icon_suffix = ''
-                icon_tag = row.find('i', class_=self.RE_ICON)
+                icon_tag = row.find('i', class_=RE_ICON)
                 if icon_tag:
                     for cls in icon_tag.get('class', []):
                         if cls.startswith('flaticon-'):
@@ -139,19 +156,28 @@ class x1337xtube:
 
                 # 4. Immediate Extraction & Conversion
                 seeds_str = cells[1].get_text(strip=True) or '0'
+                leech_str = cells[2].get_text(strip=True) or '0'
+
                 try: seeds_int = int(seeds_str.replace(',', ''))
                 except: seeds_int = 0
 
+                try: leech_int = int(leech_str.replace(',', ''))
+                except: leech_int = 0
+
+                date_txt = cells[3].get_text(strip=True) if len(cells) >= 4 else ''
+                size_txt = cells[4].get_text(strip=True) if len(cells) >= 5 else 'Unknown'
+
                 results.append({
                     'name': name_link.get_text(strip=True),
-                    'link': name_link['href'], # Placeholder
+                    'link': name_link['href'],
                     'desc_link': name_link['href'],
                     'engine_url': self.url,
                     'seeds': seeds_str,
                     'seeds_int': seeds_int,
-                    'leech': cells[2].get_text(strip=True) or '0',
-                    'size': cells[4].get_text(strip=True) if len(cells) >= 5 else 'Unknown',
-                    'pub_date': self._parse_date(cells[3].get_text(strip=True)) if len(cells) >= 4 else -1,
+                    'leech': leech_str,
+                    'leech_int': leech_int,
+                    'size': size_txt,
+                    'pub_date': self._parse_date(date_txt),
                     'icon_suffix': icon_suffix
                 })
             except Exception:
@@ -193,16 +219,27 @@ class x1337xtube:
         # 4. Filter (Soft Category)
         cat_lower = cat.lower()
         if cat_lower != 'all':
-            keywords = self.cat_keywords.get(cat_lower)
+            keywords = CAT_KEYWORDS.get(cat_lower)
             if keywords:
                 filtered = [r for r in candidates if r['icon_suffix'] in keywords]
                 if filtered: candidates = filtered
 
-        # 5. Filter (Sort & Zero Seed Limit)
+        # 5. Filter (Sort, Min Leechers, & Dead Limit)
         candidates.sort(key=lambda t: t['seeds_int'], reverse=True)
-        seeded = [t for t in candidates if t['seeds_int'] > 0]
-        unseeded = [t for t in candidates if t['seeds_int'] == 0]
-        final_list = seeded + unseeded[:MAX_ZERO_SEED_RESULTS]
+
+        active_results = []
+        dead_results = []
+
+        for t in candidates:
+            # Active if Seeds > 0 OR Leechers >= Threshold
+            if t['seeds_int'] > 0:
+                active_results.append(t)
+            elif t['leech_int'] >= MIN_LEECHERS_THRESHOLD:
+                active_results.append(t)
+            else:
+                dead_results.append(t)
+
+        final_list = active_results + dead_results[:MAX_DEAD_RESULTS]
 
         if not final_list: return
 
@@ -233,5 +270,7 @@ class x1337xtube:
             })
 
     def download_torrent(self, info):
-        if info.startswith('magnet:'): print(download_file(info))
-        else: print('')
+        if info.startswith('magnet:'):
+            print(download_file(info))
+        else:
+            print('')
