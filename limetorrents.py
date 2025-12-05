@@ -1,4 +1,3 @@
-
 # This script searches LimeTorrents.si for torrents and returns magnet links.
 # It supports searching across all categories and handles result deduplication.
 #
@@ -7,7 +6,7 @@
 # the Free Software Foundation version 3
 
 
-# VERSION: 1.5
+# VERSION: 1.8
 # Me
 
 import re
@@ -23,6 +22,18 @@ try:
 except ImportError:
     HAS_BS4 = False
 
+# --- Filtering Configuration ---
+# 1. How many "Dead" torrents (0 Seeds, Low Leechers) to show?
+# Set to 0 to hide them completely.
+MAX_DEAD_RESULTS = 0
+
+# 2. Threshold for 0-Seed torrents.
+# If a torrent has 0 Seeds, it must have at least this many Leechers to be shown.
+MIN_LEECHERS_THRESHOLD = 3
+
+# 3. Pagination
+MAX_PAGES = 1
+# -------------------------------
 
 class limetorrents:
     """Search plugin for LimeTorrents.si torrent search engine"""
@@ -82,10 +93,13 @@ class limetorrents:
         self.seen_urls.clear()
         self.seen_hashes.clear()
 
+        # Counter for dead results in the current search
+        dead_results_count = 0
+
         query = unquote(query)
         category = self.supported_categories[cat]
 
-        for page in range(1, 3):
+        for page in range(1, MAX_PAGES + 1):
             try:
                 params = {'q': query}
                 if category:
@@ -102,6 +116,9 @@ class limetorrents:
 
                 soup = BeautifulSoup(html, 'html.parser')
                 rows = soup.find_all('tr', attrs={'bgcolor': ['#F4F4F4', '#FFFFFF', '#f4f4f4', '#ffffff']})
+
+                if not rows:
+                    break
 
                 for row in rows:
                     cells = row.find_all('td')
@@ -132,13 +149,6 @@ class limetorrents:
                     if info_hash and info_hash in self.seen_hashes:
                         continue
 
-                    self.seen_urls.add(torrent_link)
-                    if info_hash:
-                        self.seen_hashes.add(info_hash)
-
-                    item["link"] = torrent_link
-                    item["desc_link"] = torrent_link
-
                     # Extract name and clean it
                     name_text = name_cell.get_text(strip=True)
                     for unwanted in ['Download', 'Direct Download', 'Torrent', 'Magnet Download']:
@@ -154,16 +164,56 @@ class limetorrents:
                         size_text = cells[2].get_text(strip=True).replace(',', '')
                         item["size"] = size_text
 
+                    # --- Seeds/Leech Extraction & Filtering Logic ---
+                    seeds_int = 0
+                    leech_int = 0
+
                     if len(cells) > 3:
                         seeds_text = cells[3].get_text(strip=True).replace(',', '')
                         item["seeds"] = seeds_text
+                        try:
+                            seeds_int = int(seeds_text)
+                        except ValueError:
+                            seeds_int = 0
 
                     if len(cells) > 4:
                         leech_text = cells[4].get_text(strip=True).replace(',', '')
                         item["leech"] = leech_text
+                        try:
+                            leech_int = int(leech_text)
+                        except ValueError:
+                            leech_int = 0
+
+                    # Check if torrent is "Dead"
+                    is_dead = False
+                    # Logic: If 0 seeds AND leechers < 3, it is dead.
+                    # Otherwise (Seeds > 0 OR Leechers >= 3), it is active.
+                    if seeds_int == 0:
+                        if leech_int < MIN_LEECHERS_THRESHOLD:
+                            is_dead = True
+
+                    # Apply Filter limits
+                    if is_dead:
+                        if dead_results_count >= MAX_DEAD_RESULTS:
+                            continue # Skip showing this dead result
+                        dead_results_count += 1
+                    # -----------------------------------------------
+
+                    self.seen_urls.add(torrent_link)
+                    if info_hash:
+                        self.seen_hashes.add(info_hash)
+
+                    item["link"] = torrent_link
+                    item["desc_link"] = torrent_link
 
                     if item["name"]:
                         prettyPrinter(item)
+
+                # Check if next page exists using the button ID provided
+                if page < MAX_PAGES:
+                    next_button = soup.find(id="loadMorep")
+                    if not next_button:
+                        break  # No more pages available
 
             except Exception:
                 continue
