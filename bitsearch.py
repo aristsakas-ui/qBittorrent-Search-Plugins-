@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 #
-# VERSION: 1.8
+# VERSION: 2.0
 # AUTHORS: Me
 #
 # DESCRIPTION:
 #    Search plugin for qBittorrent targeting BitSearch.to.
-#    Strictly extracts Desktop magnet links, parses dates to timestamps,
-#    and preserves search query spacing.
+#    - Strict "Word Boundary" matching (e.g., "Alien" matches "Alien 1979", but not "Aliens").
+#    - Advanced filtering for dead torrents vs high-leech 0-seeder torrents.
+#    - Always extracts dates.
 #
 # REQUIREMENTS:
 #    - Python 3.x
@@ -43,16 +44,20 @@ class bitsearch:
     # 1. How many pages to scrape (Default: 2)
     PAGES_TO_SCRAPE = 2
 
-    # 2. How many results with 0 seeders are allowed per search (Default: 5)
-    MAX_ZERO_SEEDERS = 5
-
-    # 3. Enable specific query cleaning (Default: True)
-    # True = Strip symbols, keep international text, single space between words.
+    # 2. Query Cleaning (Default: True)
+    # Replaces special symbols with spaces before searching to ensure better matching.
     ENABLE_QUERY_CLEANING = True
 
-    # 4. Fetch Publish Date (Default: True)
-    # Set to False to skip date parsing.
-    FETCH_DATE = True
+    # --- Filtering Configuration ---
+
+    # 3. How many "Dead" torrents (0 Seeds, Low Leechers) to show?
+    # Set to 0 to hide them completely.
+    MAX_DEAD_RESULTS = 0
+
+    # 4. Threshold for 0-Seed torrents.
+    # If a torrent has 0 Seeds, it must have at least this many Leechers to be shown
+    # (or it counts towards the MAX_DEAD_RESULTS limit).
+    MIN_LEECHERS_THRESHOLD = 3
 
     # ---------------------
 
@@ -66,10 +71,10 @@ class bitsearch:
         'music': '7'
     }
 
-    def _parse_seeds(self, seed_str):
-        """ Helper to convert seed strings (e.g. '1.2k') to int. """
+    def _parse_num(self, num_str):
+        """ Helper to convert seed/leech strings (e.g. '1.2k') to int. """
         try:
-            s = seed_str.lower().strip()
+            s = str(num_str).lower().strip()
             if 'k' in s:
                 num = float(re.sub(r'[^\d.]', '', s))
                 return int(num * 1000)
@@ -83,13 +88,15 @@ class bitsearch:
         cat_id = self.supported_categories.get(cat, '')
         clean_query = unquote(query)
 
-        # Query Cleaning Logic
+        # 1. Clean the query for the URL and for the Regex generation
         if self.ENABLE_QUERY_CLEANING:
             text_without_symbols = re.sub(r'[^\w\s]', ' ', clean_query)
             clean_query = " ".join(text_without_symbols.split())
 
         search_term = quote_plus(clean_query)
-        zero_seeder_count = 0
+
+        # Counter for dead results found so far
+        dead_results_count = 0
 
         for page in range(1, self.PAGES_TO_SCRAPE + 1):
             try:
@@ -121,7 +128,7 @@ class bitsearch:
                         'pub_date': -1
                     }
 
-                    # 1. Name & Desc Link
+                    # --- NAME EXTRACTION ---
                     title_tag = h3.find('a')
                     if title_tag:
                         item['name'] = title_tag.get_text(strip=True)
@@ -129,7 +136,25 @@ class bitsearch:
                         if href:
                             item['desc_link'] = urljoin(self.url, href)
 
-                    # 2. Magnet Link (Desktop container: hidden sm:flex)
+                    if 'name' not in item:
+                        continue
+
+                    # --- MATCHING LOGIC (Word Boundary) ---
+                    # 1. Normalize the result title: replace dots, underscores, dashes with spaces.
+                    #    e.g. "Die.Hard.1988" becomes "Die Hard 1988"
+                    normalized_name = re.sub(r'[._\-]', ' ', item['name'])
+
+                    # 2. Build Regex: \b means "Word Boundary".
+                    #    Matches the query only if it stands alone or is surrounded by spaces/start/end.
+                    #    "alien" matches "alien 1979", but fails on "aliens".
+                    pattern = r'\b{}\b'.format(re.escape(clean_query))
+
+                    # 3. Check match
+                    if not re.search(pattern, normalized_name, re.IGNORECASE):
+                        continue
+                    # --------------------------------------
+
+                    # --- MAGNET LINK ---
                     desktop_div = card.find('div', class_=lambda x: x and 'hidden' in x and 'sm:flex' in x)
                     if desktop_div:
                         magnet_node = desktop_div.find('a', href=re.compile(r'^magnet:'))
@@ -139,31 +164,28 @@ class bitsearch:
                     if 'link' not in item:
                         continue
 
-                    # 3. Size and Date (Located in the Gray Stats Bar)
+                    # --- SIZE & DATE ---
                     stats_div = card.find('div', class_=lambda x: x and 'text-gray-600' in x)
-
                     if stats_div:
-                        # --- SIZE ---
+                        # Size
                         size_icon = stats_div.find('i', class_='fa-download')
                         if size_icon:
                             size_span = size_icon.find_next_sibling('span')
                             if size_span:
                                 item['size'] = size_span.get_text(strip=True)
 
-                        # --- DATE (Simplified & Optional) ---
-                        if self.FETCH_DATE:
-                            date_icon = stats_div.find('i', class_='fa-calendar')
-                            if date_icon:
-                                date_span = date_icon.find_next_sibling('span')
-                                if date_span:
-                                    try:
-                                        # One-liner conversion: String -> Datetime Object -> Timestamp
-                                        dt = datetime.strptime(date_span.get_text(strip=True), '%m/%d/%Y')
-                                        item['pub_date'] = int(dt.timestamp())
-                                    except ValueError:
-                                        pass
+                        # Date (Always fetch)
+                        date_icon = stats_div.find('i', class_='fa-calendar')
+                        if date_icon:
+                            date_span = date_icon.find_next_sibling('span')
+                            if date_span:
+                                try:
+                                    dt = datetime.strptime(date_span.get_text(strip=True), '%m/%d/%Y')
+                                    item['pub_date'] = int(dt.timestamp())
+                                except ValueError:
+                                    pass
 
-                    # 4. Seeds & Leechers
+                    # --- SEEDS & LEECHERS ---
                     seed_cont = card.find('span', class_=lambda x: x and 'text-green-600' in x)
                     if seed_cont:
                         val = seed_cont.find('span', class_='font-medium')
@@ -174,11 +196,26 @@ class bitsearch:
                         val = leech_cont.find('span', class_='font-medium')
                         if val: item['leech'] = val.get_text(strip=True)
 
-                    # 5. Zero Seeder Limit Check
-                    if self._parse_seeds(item['seeds']) == 0:
-                        if zero_seeder_count >= self.MAX_ZERO_SEEDERS:
-                            continue
-                        zero_seeder_count += 1
+                    # --- DEAD TORRENT FILTERING LOGIC ---
+
+                    # Convert to integers for logic check
+                    seeds_int = self._parse_num(item.get('seeds', '0'))
+                    leech_int = self._parse_num(item.get('leech', '0'))
+
+                    is_dead = False
+
+                    # Definition of dead: 0 seeds AND low leechers
+                    if seeds_int == 0:
+                        if leech_int < self.MIN_LEECHERS_THRESHOLD:
+                            is_dead = True
+
+                    # If it is considered dead, check if we have room to show it
+                    if is_dead:
+                        if dead_results_count >= self.MAX_DEAD_RESULTS:
+                            continue # Skip this result
+                        dead_results_count += 1
+
+                    # ------------------------------------
 
                     prettyPrinter(item)
 
