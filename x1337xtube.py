@@ -1,4 +1,4 @@
-# VERSION: 2.3
+# VERSION: 2.4
 # This script is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License
@@ -27,12 +27,12 @@ except ImportError:
     pass
 
 # --- Configuration ---
-MAX_PAGES_TO_FETCH = 2
-MAX_MAGNET_WORKERS = 10
+MAX_PAGES_TO_FETCH = 1       # Increase this if you want deeper searches
+MAX_MAGNET_WORKERS = 4
 LEETX_DOMAIN = "https://1337x.tube"
 
 # Filtering Configuration
-MAX_DEAD_RESULTS = 5         # Maximum number of "Dead" torrents to show
+MAX_DEAD_RESULTS = 0         # Maximum number of "Dead" torrents to show
 MIN_LEECHERS_THRESHOLD = 3   # If 0 Seeds, result must have at least this many leechers to be considered "Active"
 
 # --- Constants & Regex (Global) ---
@@ -42,14 +42,16 @@ RE_ICON = re.compile(r'flaticon-')
 RE_ORDINAL = re.compile(r'(\d+)(st|nd|rd|th)')
 RE_NON_ALPHANUM = re.compile(r'[^a-z0-9]')
 
+# MAPPING: qBittorrent Category -> 1337x Icon Suffix (from HTML classes)
+# HTML Ref: flaticon-ninja-portrait (Anime), flaticon-apps (Apps), etc.
 CAT_KEYWORDS = {
-    'movies': ['movies'],
-    'tv': ['tv'],
-    'music': ['music'],
-    'games': ['games'],
-    'software': ['app', 'linux', 'windows', 'android', 'apple'],
-    'anime': ['anime'],
-    'books': ['documentary', 'other']
+    'movies':   ['movies'],
+    'tv':       ['tv'],
+    'music':    ['music'],
+    'games':    ['games'],
+    'software': ['apps'],           # HTML: flaticon-apps
+    'anime':    ['ninja-portrait'], # HTML: flaticon-ninja-portrait
+    'books':    ['documentary', 'other'] # No specific book icon, usually in Docs or Other
 }
 
 TIME_MULTIPLIERS = {
@@ -63,8 +65,19 @@ TIME_MULTIPLIERS = {
 
 class x1337xtube(object):
     url = LEETX_DOMAIN
-    name = "1337x Tube (Intelligent 2.3)"
-    supported_categories = {'all': 'All', 'movies': 'Movies', 'tv': 'TV', 'music': 'Music', 'games': 'Games', 'anime': 'Anime', 'software': 'Software', 'books': 'Books'}
+    name = "1337x Tube (Fixed Categories)"
+
+    # These keys must match the keys in CAT_KEYWORDS above
+    supported_categories = {
+        'all': 'All',
+        'movies': 'Movies',
+        'tv': 'TV',
+        'music': 'Music',
+        'games': 'Games',
+        'anime': 'Anime',
+        'software': 'Software',
+        'books': 'Books/Docs'
+    }
 
     def __init__(self):
         self.search_term = ""
@@ -120,7 +133,6 @@ class x1337xtube(object):
         return None
 
     def _fetch_and_parse_page(self, page_num, query):
-        # Using .format() instead of f-string for compatibility
         url = "{}/search/?q={}&page={}".format(self.url, quote_plus(query), page_num)
 
         try:
@@ -142,6 +154,7 @@ class x1337xtube(object):
                 name_link = name_link[-1]
 
                 # 2. Icon Suffix (Category Detection)
+                # This extracts 'ninja-portrait' from 'flaticon-ninja-portrait'
                 icon_suffix = ''
                 icon_tag = row.find('i', class_=RE_ICON)
                 if icon_tag:
@@ -178,7 +191,7 @@ class x1337xtube(object):
                     'leech_int': leech_int,
                     'size': size_txt,
                     'pub_date': self._parse_date(date_txt),
-                    'icon_suffix': icon_suffix
+                    'icon_suffix': icon_suffix  # Store 'ninja-portrait', 'apps', etc.
                 })
             except Exception:
                 continue
@@ -192,6 +205,7 @@ class x1337xtube(object):
         query_words = set(self.search_term.split())
 
         # 2. Fetch
+        # We must fetch ALL results first, because we can't filter via URL
         all_raw = []
         with ThreadPoolExecutor(max_workers=MAX_PAGES_TO_FETCH) as executor:
             futures = [executor.submit(self._fetch_and_parse_page, i, self.search_term)
@@ -216,13 +230,19 @@ class x1337xtube(object):
 
         if not candidates: return
 
-        # 4. Filter (Soft Category)
+        # 4. Filter (Category Matching)
+        # This is where we apply the fix. We compare the 'icon_suffix' extracted
+        # from the HTML (e.g., 'ninja-portrait') with our CAT_KEYWORDS list.
         cat_lower = cat.lower()
         if cat_lower != 'all':
-            keywords = CAT_KEYWORDS.get(cat_lower)
-            if keywords:
-                filtered = [r for r in candidates if r['icon_suffix'] in keywords]
-                if filtered: candidates = filtered
+            valid_suffixes = CAT_KEYWORDS.get(cat_lower)
+            if valid_suffixes:
+                # Keep only results where the icon matches the requested category
+                filtered = [r for r in candidates if r['icon_suffix'] in valid_suffixes]
+                candidates = filtered
+
+        # If filtering removed everything, stop here
+        if not candidates: return
 
         # 5. Filter (Sort, Min Leechers, & Dead Limit)
         candidates.sort(key=lambda t: t['seeds_int'], reverse=True)
